@@ -233,8 +233,12 @@ ZPage* ZHeap::alloc_page(ZPageType type, size_t size, ZAllocationFlags flags, ZP
   return page;
 }
 
+void ZHeap::remove_page(ZPage* page) {
+  _page_table.remove(page);
+}
+
 void ZHeap::undo_alloc_page(ZPage* page) {
-  assert(page->is_allocating(), "Invalid page state");
+//  assert(page->is_allocating(), "Invalid page state");
 
   ZStatInc(ZCounterUndoPageAllocation);
   log_trace(gc)("Undo page allocation, thread: " PTR_FORMAT " (%s), page: " PTR_FORMAT ", size: " SIZE_FORMAT,
@@ -254,6 +258,13 @@ void ZHeap::free_page(ZPage* page) {
 
   // Free page
   _page_allocator.free_page(page);
+}
+
+void ZHeap::fast_free_page(ZPage* page) {
+  assert(page->age() != ZPageAge::old, "");
+  // Remove page table entry
+  _page_table.remove(page);
+  _page_allocator.fast_free_page(page);
 }
 
 size_t ZHeap::free_empty_pages(const ZArray<ZPage*>* pages) {
@@ -398,11 +409,11 @@ bool ZHeap::print_location(outputStream* st, zaddress addr) const {
   zaddress_unsafe base;
 
   if (page->is_relocatable() && page->is_marked() && !ZGeneration::generation(page->generation_id())->is_phase_mark()) {
-    base = page->find_base((volatile zpointer*) addr);
+    base = page->find_base((volatile zpointer*) addr, nullptr);
   } else {
     // TODO: This part is probably broken, but register printing recovers from crashes
     st->print_raw("Unreliable ");
-    base = page->find_base_unsafe((volatile zpointer*) addr);
+    base = page->find_base_unsafe((volatile zpointer*) addr, nullptr);
   }
 
   if (base == zaddress_unsafe::null) {

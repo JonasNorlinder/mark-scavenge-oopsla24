@@ -29,9 +29,11 @@
 #include "gc/z/zForwardingEntry.hpp"
 #include "gc/z/zGenerationId.hpp"
 #include "gc/z/zLock.hpp"
+#include "gc/z/zLiveMap.hpp"
 #include "gc/z/zPageAge.hpp"
 #include "gc/z/zPageType.hpp"
 #include "gc/z/zVirtualMemory.hpp"
+#include "runtime/atomic.hpp"
 
 class ObjectClosure;
 class ZForwardingAllocator;
@@ -62,9 +64,11 @@ private:
   ZPageAge               _from_age;
   ZPageAge               _to_age;
   volatile bool          _claimed;
+  volatile bool          _claimed2;
   mutable ZConditionLock _ref_lock;
   volatile int32_t       _ref_count;
   volatile bool          _done;
+  volatile bool          _evacuated;
 
   // Relocated remembered set fields support
   volatile ZPublishState _relocated_remembered_fields_state;
@@ -78,6 +82,14 @@ private:
   // Debugging
   volatile Thread*       _in_place_thread;
 
+  // Deferred
+  const bool             _is_deferrable;
+  ZLiveMap               _zlivemap;
+  const size_t           _live_bytes;
+  size_t                 _evacuated_bytes;
+  volatile bool          _in_placed;
+  bool                   _livemap_copied;
+
   ZForwardingEntry* entries() const;
   ZForwardingEntry at(ZForwardingCursor* cursor) const;
   ZForwardingEntry first(uintptr_t from_index, ZForwardingCursor* cursor) const;
@@ -88,9 +100,14 @@ private:
 
   ZForwarding(ZPage* page, ZPageAge to_age, size_t nentries);
 
+  void livemap_set(zaddress addr);
+
 public:
   static uint32_t nentries(const ZPage* page);
   static ZForwarding* alloc(ZForwardingAllocator* allocator, ZPage* page, ZPageAge to_age);
+
+  bool is_deferrable() const;
+  void copy_livemap();
 
   ZPageType type() const;
   ZPageAge from_age() const;
@@ -99,8 +116,12 @@ public:
   zoffset_end end() const;
   size_t size() const;
   size_t object_alignment_shift() const;
+  ZLiveMap* livemap_copy();
 
   bool is_promotion() const;
+
+  template <typename Function>
+  void object_iterate_via_livemap(Function function);
 
   // Visit from-objects
   template <typename Function>
@@ -123,22 +144,50 @@ public:
   void oops_do_in_forwarded_via_table(Function function);
 
   bool claim();
+  bool claim2();
+  bool is_claim2();
+  bool unclaim2();
+  bool is_in_place() const {
+    return Atomic::load(&_in_placed);
+  }
+  void mark_in_place() {
+    Atomic::store(&_in_placed, true);
+  }
 
   // In-place relocation support
   bool in_place_relocation() const;
-  void in_place_relocation_claim_page();
+  bool in_place_relocation_claim_page(bool return_if_evacuated=false);
   void in_place_relocation_start(zoffset relocated_watermark);
   void in_place_relocation_finish();
   bool in_place_relocation_is_below_top_at_start(zoffset addr) const;
+  bool try_in_place_relocation_claim_page();
+  bool try_retain_page();
+  bool try_fast_zero_rc(int32_t initial_rc);
 
-  bool retain_page(ZRelocateQueue* queue);
+  bool retain_page(ZRelocateQueue* queue, bool deferred, bool fail_fast=false);
+  bool retain_page(bool deferred);
   void release_page();
 
   ZPage* detach_page();
   ZPage* page();
+  int32_t ref_count() const;
+  void wait_until_done() const;
 
-  void mark_done();
+  void mark_done(bool notify=true);
   bool is_done() const;
+  bool inc_evacuated_bytes(size_t bytes);
+  size_t evacuated_bytes() const {
+    return _evacuated_bytes;
+  }
+  size_t deferred_bytes() const {
+    return _live_bytes - _evacuated_bytes;
+  }
+  size_t live_bytes() const {
+    return _live_bytes;
+  }
+
+  void mark_evacuated();
+  bool is_evacuated() const;
 
   zaddress find(zaddress_unsafe addr);
 

@@ -165,7 +165,7 @@ bool ZRememberedSetContainingIterator::next(ZRememberedSetContaining* containing
   // owning object.
   if (_remset_iter.next(&index)) {
     containing->_field_addr = to_addr(index);
-    containing->_addr = _page->find_base((volatile zpointer*)untype(containing->_field_addr));
+    containing->_addr = _page->find_base((volatile zpointer*)untype(containing->_field_addr), nullptr);
 
     if (is_null(containing->_addr)) {
       // Found no live object

@@ -24,6 +24,9 @@
 #ifndef SHARE_GC_Z_ZPAGE_INLINE_HPP
 #define SHARE_GC_Z_ZPAGE_INLINE_HPP
 
+#include "gc/z/zAddress.hpp"
+#include "gc/z/zGeneration.hpp"
+#include "gc/z/zGenerationId.hpp"
 #include "gc/z/zPage.hpp"
 
 #include "gc/z/zAddress.inline.hpp"
@@ -31,6 +34,7 @@
 #include "gc/z/zGlobals.hpp"
 #include "gc/z/zLiveMap.inline.hpp"
 #include "gc/z/zNUMA.hpp"
+#include "gc/z/zPageAge.hpp"
 #include "gc/z/zPhysicalMemory.inline.hpp"
 #include "gc/z/zRememberedSet.inline.hpp"
 #include "gc/z/zUtils.inline.hpp"
@@ -195,6 +199,10 @@ inline uint32_t ZPage::seqnum() const {
   return _seqnum;
 }
 
+inline void ZPage::decrease_seqnum() {
+  if (ZGeneration::young()->is_phase_mark()) _seqnum = ZGeneration::young()->seqnum() - 1;
+}
+
 inline bool ZPage::is_allocating() const {
   return _seqnum == generation()->seqnum();
 }
@@ -212,7 +220,7 @@ inline void ZPage::set_last_used() {
 }
 
 inline bool ZPage::is_in(zoffset offset) const {
-  return offset >= start() && offset < top();
+  return true || (offset >= start() && offset < top()); // TODO: remove leading "true ||"
 }
 
 inline bool ZPage::is_in(zaddress addr) const {
@@ -337,7 +345,7 @@ inline uint32_t ZPage::live_objects() const {
 }
 
 inline size_t ZPage::live_bytes() const {
-  assert_zpage_mark_state();
+  // assert_zpage_mark_state();
 
   return _livemap.live_bytes();
 }
@@ -354,6 +362,18 @@ inline void ZPage::object_iterate(Function function) {
   };
 
   _livemap.iterate(_generation_id, do_bit);
+}
+
+template <typename Function>
+inline void ZPage::object_iterate_deferred(Function function) {
+  auto do_bit = [&](BitMap::idx_t index) -> bool {
+    const oop obj = object_from_bit_index(index);
+
+    // Apply function
+    return function(obj);
+  };
+
+  _livemap.iterate_deferred(_generation_id, do_bit);
 }
 
 inline void ZPage::remember(volatile zpointer* p) {
@@ -395,7 +415,7 @@ inline bool ZPage::was_remembered(volatile zpointer* p) {
 }
 
 
-inline zaddress_unsafe ZPage::find_base_unsafe(volatile zpointer* p) {
+inline zaddress_unsafe ZPage::find_base_unsafe(volatile zpointer* p, ZLiveMap* livemap) {
   if (is_large()) {
     return ZOffset::address_unsafe(start());
   }
@@ -404,7 +424,7 @@ inline zaddress_unsafe ZPage::find_base_unsafe(volatile zpointer* p) {
   // the field address p, it's important to note that for medium pages both p
   // and it's associated base could map to the same index.
   const BitMap::idx_t index = bit_index(zaddress(uintptr_t(p)));
-  const BitMap::idx_t base_index = _livemap.find_base_bit(index);
+  const BitMap::idx_t base_index = livemap != nullptr ? livemap->find_base_bit(index) : _livemap.find_base_bit(index);
   if (base_index == BitMap::idx_t(-1)) {
     return zaddress_unsafe::null;
   } else {
@@ -412,10 +432,10 @@ inline zaddress_unsafe ZPage::find_base_unsafe(volatile zpointer* p) {
   }
 }
 
-inline zaddress_unsafe ZPage::find_base(volatile zpointer* p) {
+inline zaddress_unsafe ZPage::find_base(volatile zpointer* p, ZLiveMap* livemap) {
   assert_zpage_mark_state();
 
-  return find_base_unsafe(p);
+  return find_base_unsafe(p, livemap);
 }
 
 template <typename Function>
@@ -453,8 +473,6 @@ inline void ZPage::oops_do_current_remembered(Function function) {
 }
 
 inline zaddress ZPage::alloc_object(size_t size) {
-  assert(is_allocating(), "Invalid state");
-
   const size_t aligned_size = align_up(size, object_alignment());
   const zoffset_end addr = top();
 
@@ -476,8 +494,6 @@ inline zaddress ZPage::alloc_object(size_t size) {
 }
 
 inline zaddress ZPage::alloc_object_atomic(size_t size) {
-  assert(is_allocating(), "Invalid state");
-
   const size_t aligned_size = align_up(size, object_alignment());
   zoffset_end addr = top();
 
@@ -525,8 +541,6 @@ inline bool ZPage::undo_alloc_object(zaddress addr, size_t size) {
 }
 
 inline bool ZPage::undo_alloc_object_atomic(zaddress addr, size_t size) {
-  assert(is_allocating(), "Invalid state");
-
   const zoffset offset = ZAddress::offset(addr);
   const size_t aligned_size = align_up(size, object_alignment());
   zoffset_end old_top = top();
@@ -558,6 +572,18 @@ inline void ZPage::log_msg(const char* msg_format, ...) const {
     print_on_msg(&stream, err_msg(FormatBufferDummy(), msg_format, argp));
     va_end(argp);
   }
+}
+
+inline void ZPage::reset_top() {
+  _top = to_zoffset_end(start());
+}
+
+inline ZForwarding* ZPage::get_forwarding() const {
+  return ZGeneration::generation(ZGenerationId::young)->forwarding(ZOffset::address_unsafe(start()));
+}
+
+inline bool ZPage::in_any_pool() const {
+  return !_node.not_linked();
 }
 
 #endif // SHARE_GC_Z_ZPAGE_INLINE_HPP

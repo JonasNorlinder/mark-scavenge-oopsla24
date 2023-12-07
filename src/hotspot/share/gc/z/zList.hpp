@@ -37,6 +37,7 @@ class ZListNode {
 private:
   ZListNode<T>* _next;
   ZListNode<T>* _prev;
+  ZList<T>* _list = nullptr;
 
   NONCOPYABLE(ZListNode);
 
@@ -47,6 +48,11 @@ private:
 public:
   ZListNode();
   ~ZListNode();
+
+  // Used to check if a page is in the from-space pool in O(1) time
+  bool not_linked() const {
+    return _next == _prev && _next == this;
+  }
 };
 
 // Doubly linked list

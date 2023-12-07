@@ -21,6 +21,9 @@
  * questions.
  */
 
+#include "gc/shared/gcLogPrecious.hpp"
+#include "gc/z/zFromSpacePool.inline.hpp"
+#include "gc/z/zGlobals.hpp"
 #include "precompiled.hpp"
 #include "gc/shared/gc_globals.hpp"
 #include "gc/z/zCollectedHeap.hpp"
@@ -154,10 +157,11 @@ ZDriverRequest rule_minor_allocation_rate_dynamic(const ZDirectorStats& stats,
   }
 
   // Calculate amount of free memory available. Note that we take the
-  // relocation headroom into account to avoid in-place relocation.
   const size_t used = stats._heap._used;
+  // relocation headroom into account to avoid in-place relocation.
   const size_t free_including_headroom = capacity - MIN2(capacity, used);
   const size_t free = free_including_headroom - MIN2(free_including_headroom, ZHeuristics::relocation_headroom());
+  size_t fsp_offset = 0.95 * ZFromSpacePool::pool()->to_be_free_in_bytes();
 
   // Calculate time until OOM given the max allocation rate and the amount
   // of free memory. The allocation rate is a moving average and we multiply
@@ -172,7 +176,7 @@ ZDriverRequest rule_minor_allocation_rate_dynamic(const ZDirectorStats& stats,
   const double alloc_rate_sd_percent = alloc_rate_sd / (alloc_rate_avg + 1.0);
   const double alloc_rate_conservative = (MAX2(alloc_rate_predict, alloc_rate_avg) * ZAllocationSpikeTolerance) + (alloc_rate_sd * one_in_1000) + 1.0;
   const double alloc_rate = conservative_alloc_rate ? alloc_rate_conservative : alloc_rate_stats._avg;
-  const double time_until_oom = (free / alloc_rate) / (1.0 + alloc_rate_sd_percent);
+  const double time_until_oom = ((free + fsp_offset) / alloc_rate) / (1.0 + alloc_rate_sd_percent);
 
   // Calculate max serial/parallel times of a GC cycle. The times are
   // moving averages, we add ~3.3 sigma to account for the variance.
@@ -381,7 +385,8 @@ static bool rule_minor_high_usage(const ZDirectorStats& stats) {
   const size_t used = stats._heap._used;
   const size_t free_including_headroom = soft_max_capacity - MIN2(soft_max_capacity, used);
   const size_t free = free_including_headroom - MIN2(free_including_headroom, ZHeuristics::relocation_headroom());
-  const double free_percent = percent_of(free, soft_max_capacity);
+  const size_t fsp_offset = ZFromSpacePool::pool()->to_be_free_in_bytes();
+  const double free_percent = percent_of(free + fsp_offset, soft_max_capacity);
 
   auto print_function = [&](size_t free, double free_percent) {
     log_debug(gc, director)("Rule Minor: High Usage, Free: " SIZE_FORMAT "MB(%.1f%%)",
@@ -457,8 +462,9 @@ static double calculate_extra_young_gc_time(const ZDirectorStats& stats) {
 
   const double young_gc_time = gc_time(stats._young_stats);
 
+  const size_t fsp_offset = ZFromSpacePool::pool()->reclaimed_avg();
   // Calculate how much memory young collections are predicted to free.
-  const size_t reclaimed_per_young_gc = stats._young_stats._stat_heap._reclaimed_avg;
+  const size_t reclaimed_per_young_gc = stats._young_stats._stat_heap._reclaimed_avg + (fsp_offset * ZFactor);
 
   // Calculate current YC time and predicted YC time after an old collection.
   const double current_young_gc_time_per_bytes_freed = double(young_gc_time) / double(reclaimed_per_young_gc);
@@ -483,7 +489,8 @@ static bool rule_major_allocation_rate(const ZDirectorStats& stats) {
   const double young_gc_time = gc_time(stats._young_stats);
 
   // Calculate how much memory collections are predicted to free.
-  const size_t reclaimed_per_young_gc = stats._young_stats._stat_heap._reclaimed_avg;
+  const size_t fsp_offset = ZFromSpacePool::pool()->reclaimed_avg();
+  const size_t reclaimed_per_young_gc = stats._young_stats._stat_heap._reclaimed_avg + fsp_offset;
   const size_t reclaimed_per_old_gc = stats._old_stats._stat_heap._reclaimed_avg;
 
   // Calculate the GC cost for each reclaimed byte

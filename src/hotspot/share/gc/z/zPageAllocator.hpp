@@ -64,7 +64,7 @@ class ZPageAllocator {
   friend class ZUncommitter;
 
 private:
-  mutable ZLock              _lock;
+  mutable ZLock     _lock;
   ZPageCache                 _cache;
   ZVirtualMemoryManager      _virtual;
   ZPhysicalMemoryManager     _physical;
@@ -108,6 +108,8 @@ private:
 
   bool alloc_page_common_inner(ZPageType type, size_t size, ZList<ZPage>* pages);
   bool alloc_page_common(ZPageAllocation* allocation);
+
+  ZPage* alloc_from_fsp(ZPageType type, size_t size, ZList<ZPage>* pages);
   bool alloc_page_stall(ZPageAllocation* allocation);
   bool alloc_page_or_stall(ZPageAllocation* allocation);
   bool should_defragment(const ZPage* page) const;
@@ -152,6 +154,7 @@ public:
   void recycle_page(ZPage* page);
   void safe_destroy_page(ZPage* page);
   void free_page(ZPage* page);
+  void fast_free_page(ZPage* page);
   void free_pages(const ZArray<ZPage*>* pages);
 
   void enable_safe_destroy() const;

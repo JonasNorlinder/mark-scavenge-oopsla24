@@ -21,6 +21,11 @@
  * questions.
  */
 
+#include "gc/z/zFromSpacePool.hpp"
+#include "gc/z/zFromSpacePool.inline.hpp"
+#include "gc/z/zHeap.hpp"
+#include "gc/z/zLiveMap.hpp"
+#include "gc/z/zPageType.hpp"
 #include "precompiled.hpp"
 #include "gc/shared/gcLogPrecious.hpp"
 #include "gc/shared/suspendibleThreadSet.hpp"
@@ -105,6 +110,7 @@ private:
   const ZAllocationFlags     _flags;
   const uint32_t             _young_seqnum;
   const uint32_t             _old_seqnum;
+  const ZPageAge             _age;
   size_t                     _flushed;
   size_t                     _committed;
   ZList<ZPage>               _pages;
@@ -112,17 +118,22 @@ private:
   ZFuture<bool>              _stall_result;
 
 public:
-  ZPageAllocation(ZPageType type, size_t size, ZAllocationFlags flags)
+  ZPageAllocation(ZPageType type, size_t size, ZAllocationFlags flags, ZPageAge age)
     : _type(type),
       _size(size),
       _flags(flags),
       _young_seqnum(ZGeneration::young()->seqnum()),
       _old_seqnum(ZGeneration::old()->seqnum()),
+      _age(age),
       _flushed(0),
       _committed(0),
       _pages(),
       _node(),
       _stall_result() {}
+
+  ZPageAge age() const {
+    return _age;
+  }
 
   ZPageType type() const {
     return _type;
@@ -469,8 +480,14 @@ bool ZPageAllocator::is_alloc_allowed(size_t size) const {
 
 bool ZPageAllocator::alloc_page_common_inner(ZPageType type, size_t size, ZList<ZPage>* pages) {
   if (!is_alloc_allowed(size)) {
-    // Out of memory
-    return false;
+    if (ZPage* fsp = alloc_from_fsp(type, size, pages)) {
+      ZHeap::heap()->fast_free_page(fsp);
+      pages->insert_last(fsp);
+      return true;
+    } else {
+      // Out of memory
+      return false;
+    }
   }
 
   // Try allocate from the page cache
@@ -479,6 +496,33 @@ bool ZPageAllocator::alloc_page_common_inner(ZPageType type, size_t size, ZList<
     // Success
     pages->insert_last(page);
     return true;
+  }
+
+  // _lock.unlock();
+  auto fsp = alloc_from_fsp(type, size, pages);
+  // _lock.lock();
+
+  // if (!is_alloc_allowed(size)) {
+  //   // Out of memory
+  //   if (fsp) {
+  //     ZFreeList& free_list = ZFromSpacePool::pool()->_per_cpu_free_list.get();
+  //     ZLocker<ZLock> guard(&free_list._guard);
+  //     free_list._list.insert_last(fsp);
+  //   }
+  //   return false;
+  // }
+  if (fsp) {
+    ZHeap::heap()->fast_free_page(fsp);
+    pages->insert_last(fsp);
+    return true;
+  }
+
+
+  if (ZPage* const page = _cache.alloc_oversized_page(type, size)) {
+    pages->insert_last(page);
+    return true;
+  } else {
+    // TODO ADD ZStatInc(ZCounterPageCacheMiss);
   }
 
   // Try increase capacity
@@ -518,9 +562,27 @@ static void check_out_of_memory_during_initialization() {
   }
 }
 
+ZPage* ZPageAllocator::alloc_from_fsp(ZPageType type, size_t size, ZList<ZPage>* pages) {
+  if (type != ZPageType::small) {
+    return nullptr;
+  }
+
+  return ZFromSpacePool::pool()->alloc_page();
+}
+
 bool ZPageAllocator::alloc_page_stall(ZPageAllocation* allocation) {
   ZStatTimer timer(ZCriticalPhaseAllocationStall);
   EventZAllocationStall event;
+
+  const char* type = allocation->type() == ZPageType::small ? "small" : allocation->type() == ZPageType::medium ? "medium" : "large";
+  volatile auto siz = ZFromSpacePool::pool()->cache_size();
+  volatile auto pagess = ZFromSpacePool::pool()->pages();
+
+  auto capacity = ZHeap::heap()->capacity();
+  auto used = ZHeap::heap()->used();
+  volatile size_t free = used - MIN2(capacity, used);
+
+  log_info(gc)("Allocation Stall info: page_type %s object_size %zd cache_size %zd pages_size %zd phase %s free %zd", type, allocation->size(), siz, pagess, ZGeneration::young()->phase_to_string(), free / M);
 
   // We can only block if the VM is fully initialized
   check_out_of_memory_during_initialization();
@@ -552,7 +614,6 @@ bool ZPageAllocator::alloc_page_stall(ZPageAllocation* allocation) {
 bool ZPageAllocator::alloc_page_or_stall(ZPageAllocation* allocation) {
   {
     ZLocker<ZLock> locker(&_lock);
-
     if (alloc_page_common(allocation)) {
       // Success
       return true;
@@ -700,7 +761,7 @@ ZPage* ZPageAllocator::alloc_page(ZPageType type, size_t size, ZAllocationFlags 
   EventZPageAllocation event;
 
 retry:
-  ZPageAllocation allocation(type, size, flags);
+  ZPageAllocation allocation(type, size, flags, age);
 
   // Allocate one or more pages from the page cache. If the allocation
   // succeeds but the returned pages don't cover the complete allocation,
@@ -730,6 +791,10 @@ retry:
   // be done after we potentially blocked in a safepoint (stalled)
   // where the global sequence number was updated.
   page->reset(age, ZPageResetType::Allocation);
+
+  if (flags.alloc_with_old_seqnum()) {
+    page->decrease_seqnum();
+  }
 
   // Update allocation statistics. Exclude gc relocations to avoid
   // artificial inflation of the allocation rate during relocation.
@@ -792,6 +857,17 @@ void ZPageAllocator::free_page(ZPage* page) {
 
   // Try satisfy stalled allocations
   satisfy_stalled();
+}
+
+void ZPageAllocator::fast_free_page(ZPage* page) {
+  const ZGenerationId generation_id = page->generation_id();
+
+  // Update used statistics
+  const size_t size = page->size();
+  decrease_used(size);
+  decrease_used_generation(generation_id, size);
+
+  page->set_last_used();
 }
 
 void ZPageAllocator::free_pages(const ZArray<ZPage*>* pages) {

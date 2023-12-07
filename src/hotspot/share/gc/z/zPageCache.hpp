@@ -44,7 +44,6 @@ private:
 
   ZPage* alloc_oversized_medium_page(size_t size);
   ZPage* alloc_oversized_large_page(size_t size);
-  ZPage* alloc_oversized_page(size_t size);
 
   bool flush_list_inner(ZPageCacheFlushClosure* cl, ZList<ZPage>* from, ZList<ZPage>* to);
   void flush_list(ZPageCacheFlushClosure* cl, ZList<ZPage>* from, ZList<ZPage>* to);
@@ -55,6 +54,7 @@ public:
   ZPageCache();
 
   ZPage* alloc_page(ZPageType type, size_t size);
+  ZPage* alloc_oversized_page(ZPageType type, size_t size);
   void free_page(ZPage* page);
 
   void flush_for_allocation(size_t requested, ZList<ZPage>* to);

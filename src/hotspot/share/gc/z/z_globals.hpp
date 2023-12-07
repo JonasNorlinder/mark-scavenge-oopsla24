@@ -35,6 +35,12 @@
                    range,                                                   \
                    constraint)                                              \
                                                                             \
+  product(bool, ZDefer, true,                                               \
+          "Enable Mark-Scavenge")                                            \
+                                                                            \
+  product(double, ZFactor, 1.0,                              \
+          "")                         \
+                                                                            \
   product(double, ZYoungCompactionLimit, 25.0,                              \
           "Maximum allowed garbage in young pages")                         \
                                                                             \

@@ -35,6 +35,10 @@
 #include "utilities/bitMap.inline.hpp"
 #include "utilities/debug.hpp"
 
+inline uintptr_t* ZLiveMap::livemap_raw() {
+  return _bitmap.raw();
+}
+
 inline void ZLiveMap::reset() {
   _seqnum = 0;
 }
@@ -144,21 +148,35 @@ inline size_t ZLiveMap::do_object(ObjectClosure* cl, zaddress addr) const {
 }
 
 template <typename Function>
-inline void ZLiveMap::iterate_segment(BitMap::idx_t segment, Function function) {
-  assert(is_segment_live(segment), "Must be");
-
+inline bool ZLiveMap::iterate_segment(BitMap::idx_t segment, Function function) {
   const BitMap::idx_t start_index = segment_start(segment);
   const BitMap::idx_t end_index   = segment_end(segment);
 
-  _bitmap.iterate(function, start_index, end_index);
+  return _bitmap.iterate(function, start_index, end_index);
 }
 
 template <typename Function>
 inline void ZLiveMap::iterate(ZGenerationId id, Function function) {
-  if (!is_marked(id)) {
+  if (id != ZGenerationId::deferred && !is_marked(id)) {
     return;
   }
 
+  auto live_only = [&](BitMap::idx_t index) -> bool {
+    if ((index & 1) == 0) {
+      return function(index);
+    }
+    // Don't visit the finalizable bits
+    return true;
+  };
+
+  for (BitMap::idx_t segment = first_live_segment(); segment < nsegments; segment = next_live_segment(segment)) {
+    // For each live segment
+    if (!iterate_segment(segment, live_only)) break;
+  }
+}
+
+template <typename Function>
+inline void ZLiveMap::iterate_deferred(ZGenerationId id, Function function) {
   auto live_only = [&](BitMap::idx_t index) -> bool {
     if ((index & 1) == 0) {
       return function(index);

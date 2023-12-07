@@ -30,9 +30,11 @@
 #include "memory/allocation.hpp"
 
 class ObjectClosure;
+class ZForwarding;
 
 class ZLiveMap {
   friend class ZLiveMapTest;
+  friend class ZForwarding;
 
 private:
   static const size_t nsegments = 64;
@@ -71,11 +73,13 @@ private:
   size_t do_object(ObjectClosure* cl, zaddress addr) const;
 
   template <typename Function>
-  void iterate_segment(BitMap::idx_t segment, Function function);
+  bool iterate_segment(BitMap::idx_t segment, Function function);
 
 public:
   ZLiveMap(uint32_t size);
   ZLiveMap(const ZLiveMap& other) = delete;
+
+  uintptr_t* livemap_raw();
 
   void reset();
   void resize(uint32_t size);
@@ -92,6 +96,8 @@ public:
 
   template <typename Function>
   void iterate(ZGenerationId id, Function function);
+  template <typename Function>
+  void iterate_deferred(ZGenerationId id, Function function);
 
   BitMap::idx_t find_base_bit(BitMap::idx_t index);
   BitMap::idx_t find_base_bit_in_segment(BitMap::idx_t start, BitMap::idx_t index);

@@ -28,6 +28,8 @@
 
 #include "gc/z/zAbort.inline.hpp"
 #include "gc/z/zHeap.inline.hpp"
+#include "gc/z/zPage.hpp"
+#include "gc/z/zPageAllocator.hpp"
 #include "gc/z/zWorkers.inline.hpp"
 #include "utilities/debug.hpp"
 

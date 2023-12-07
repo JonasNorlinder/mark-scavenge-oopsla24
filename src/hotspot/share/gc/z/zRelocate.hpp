@@ -99,6 +99,12 @@ public:
   void desynchronize();
 
   ZRelocateQueue* queue();
+
+  static size_t compact_in_place(ZForwarding* forwarding);
+  static zaddress lookup_debug(ZForwarding* forwarding, zaddress from_addr);
+  static zaddress lookup(ZForwarding* forwarding, zaddress from_addr, ZForwardingCursor* cursor);
+  static zaddress insert(ZForwarding* forwarding, zaddress from_addr, zaddress to_addr, ZForwardingCursor* cursor);
+
 };
 
 #endif // SHARE_GC_Z_ZRELOCATE_HPP

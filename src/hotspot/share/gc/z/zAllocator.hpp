@@ -78,7 +78,7 @@ public:
   ZAllocatorForRelocation();
 
   // Relocation
-  zaddress alloc_object(size_t size);
+  zaddress alloc_object(size_t size, bool deferred = false);
   void undo_alloc_object(zaddress addr, size_t size);
 
   ZPage* alloc_page_for_relocation(ZPageType type, size_t size, ZAllocationFlags flags);

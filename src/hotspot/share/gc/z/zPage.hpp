@@ -24,6 +24,8 @@
 #ifndef SHARE_GC_Z_ZPAGE_HPP
 #define SHARE_GC_Z_ZPAGE_HPP
 
+#include "gc/z/zForwarding.hpp"
+#include "gc/z/zFromSpacePool.hpp"
 #include "gc/z/zGenerationId.hpp"
 #include "gc/z/zList.hpp"
 #include "gc/z/zLiveMap.hpp"
@@ -35,6 +37,7 @@
 #include "memory/allocation.hpp"
 
 class ZGeneration;
+class ZForwarding;
 
 enum class ZPageResetType {
   // Normal allocation path
@@ -51,7 +54,9 @@ enum class ZPageResetType {
 class ZPage : public CHeapObj<mtGC> {
   friend class VMStructs;
   friend class ZList<ZPage>;
+  friend class ZListNode<ZPage>;
   friend class ZForwardingTest;
+  friend class ZForwarding;
 
 private:
   ZPageType            _type;
@@ -60,6 +65,7 @@ private:
   uint8_t              _numa_id;
   uint32_t             _seqnum;
   uint32_t             _seqnum_other;
+  uint32_t             _seqnum_fsp;
   ZVirtualMemory       _virtual;
   volatile zoffset_end _top;
   ZLiveMap             _livemap;
@@ -90,6 +96,12 @@ private:
 
 public:
   ZPage(ZPageType type, const ZVirtualMemory& vmem, const ZPhysicalMemory& pmem);
+
+  bool was_fsp_prev_cycle() const;
+  void mark_as_fsp_current_cycle();
+  bool is_unlinked() const;
+
+  uintptr_t* livemap_raw();
 
   ZPage* clone_limited() const;
   ZPage* clone_limited_promote_flipped() const;
@@ -122,6 +134,7 @@ public:
   ZPageAge age() const;
 
   uint32_t seqnum() const;
+  void decrease_seqnum();
   bool is_allocating() const;
   bool is_relocatable() const;
 
@@ -129,6 +142,8 @@ public:
   void set_last_used();
 
   void reset(ZPageAge age, ZPageResetType type);
+  void reset_age(ZPageAge age);
+  void reset_top();
 
   void finalize_reset_for_in_place_relocation();
 
@@ -165,6 +180,9 @@ public:
   template <typename Function>
   void object_iterate(Function function);
 
+  template <typename Function>
+  void object_iterate_deferred(Function function);
+
   void remember(volatile zpointer* p);
 
   // In-place relocation support
@@ -178,8 +196,8 @@ public:
   BitMap::Iterator remset_iterator_limited_current(uintptr_t l_offset, size_t size);
   BitMap::Iterator remset_iterator_limited_previous(uintptr_t l_offset, size_t size);
 
-  zaddress_unsafe find_base_unsafe(volatile zpointer* p);
-  zaddress_unsafe find_base(volatile zpointer* p);
+  zaddress_unsafe find_base_unsafe(volatile zpointer* p, ZLiveMap* livemap);
+  zaddress_unsafe find_base(volatile zpointer* p, ZLiveMap* livemap);
 
   template <typename Function>
   void oops_do_remembered(Function function);
@@ -220,6 +238,10 @@ public:
   void verify_live(uint32_t live_objects, size_t live_bytes, bool in_place) const;
 
   void fatal_msg(const char* msg) const;
+
+  // Deferred
+  ZForwarding* get_forwarding() const;
+  bool in_any_pool() const;
 };
 
 class ZPageClosure {

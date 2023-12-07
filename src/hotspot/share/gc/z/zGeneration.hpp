@@ -224,7 +224,6 @@ public:
   ZGenerationYoung(ZPageTable* page_table,
                    const ZForwardingTable* old_forwarding_table,
                    ZPageAllocator* page_allocator);
-
   ZYoungType type() const;
 
   void collect(ZYoungType type, ConcurrentGCTimer* timer);

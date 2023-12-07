@@ -576,6 +576,7 @@ void ZVerify::before_relocation(ZForwarding* forwarding) {
     const zaddress_unsafe addr = to_zaddress_unsafe(cast_from_oop<uintptr_t>(obj));
     cl.set_from_addr(addr);
     obj->oop_iterate(&cl);
+    return true;
   });
 }
 

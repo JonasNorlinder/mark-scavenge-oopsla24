@@ -21,6 +21,14 @@
  * questions.
  */
 
+#include "gc/shared/gcLogPrecious.hpp"
+#include "gc/z/zAddress.hpp"
+#include "gc/z/zForwarding.hpp"
+#include "gc/z/zFromSpacePool.inline.hpp"
+#include "gc/z/zGeneration.hpp"
+#include "gc/z/zGlobals.hpp"
+#include "gc/z/zHeap.hpp"
+#include "gc/z/zPageType.hpp"
 #include "precompiled.hpp"
 #include "gc/shared/gc_globals.hpp"
 #include "gc/shared/suspendibleThreadSet.hpp"
@@ -49,6 +57,8 @@
 #include "runtime/atomic.hpp"
 #include "utilities/debug.hpp"
 
+#include <iostream>
+
 static const ZStatCriticalPhase ZCriticalPhaseRelocationStall("Relocation Stall");
 static const ZStatSubPhase ZSubPhaseConcurrentRelocateRememberedSetFlipPromotedYoung("Concurrent Relocate Remset FP", ZGenerationId::young);
 
@@ -71,6 +81,7 @@ static zaddress forwarding_find(ZForwarding* forwarding, zaddress from_addr, ZFo
 }
 
 static zaddress forwarding_insert(ZForwarding* forwarding, zoffset from_offset, zaddress to_addr, ZForwardingCursor* cursor) {
+  assert(to_addr != zaddress::null, "soundness check for deferred");
   const uintptr_t from_index = forwarding_index(forwarding, from_offset);
   const zoffset to_offset = ZAddress::offset(to_addr);
   const zoffset to_offset_final = forwarding->insert(from_index, to_offset, cursor);
@@ -334,18 +345,8 @@ void ZRelocate::add_remset(volatile zpointer* p) {
   ZGeneration::young()->remember(p);
 }
 
-static zaddress relocate_object_inner(ZForwarding* forwarding, zaddress from_addr, ZForwardingCursor* cursor) {
-  assert(ZHeap::heap()->is_object_live(from_addr), "Should be live");
-
-  // Allocate object
-  const size_t size = ZUtils::object_size(from_addr);
-
-  ZAllocatorForRelocation* allocator = ZAllocator::relocation(forwarding->to_age());
-
-  const zaddress to_addr = allocator->alloc_object(size);
-
-  if (is_null(to_addr)) {
-    // Allocation failed
+static zaddress relocate_object_inner(ZForwarding* forwarding, zaddress from_addr, ZForwardingCursor* cursor, size_t size, const zaddress to_addr, ZAllocatorForRelocation* allocator) {
+  if (to_addr == zaddress::null) {
     return zaddress::null;
   }
 
@@ -355,12 +356,60 @@ static zaddress relocate_object_inner(ZForwarding* forwarding, zaddress from_add
   // Insert forwarding
   const zaddress to_addr_final = forwarding_insert(forwarding, from_addr, to_addr, cursor);
 
-  if (to_addr_final != to_addr) {
+  if (to_addr_final == to_addr) {
+    forwarding->inc_evacuated_bytes(size);
+  } else {
     // Already relocated, try undo allocation
     allocator->undo_alloc_object(to_addr, size);
   }
 
   return to_addr_final;
+}
+
+zaddress ZRelocate::lookup(ZForwarding* forwarding, zaddress from_addr, ZForwardingCursor* cursor) {
+  return forwarding_find(forwarding, from_addr, cursor);
+}
+
+[[maybe_unused]]
+zaddress __attribute__((optimize(0))) ZRelocate::lookup_debug(ZForwarding* forwarding, zaddress from_addr) {
+  ZForwardingCursor cursor;
+  return forwarding_find(forwarding, from_addr, &cursor);
+}
+
+zaddress ZRelocate::insert(ZForwarding* forwarding, zaddress from_addr, zaddress to_addr, ZForwardingCursor* cursor) {
+  return forwarding_insert(forwarding, from_addr, to_addr, cursor);
+}
+
+size_t ZRelocate::compact_in_place(ZForwarding* forwarding) {
+  assert(forwarding->ref_count() < 0,   "Called compact in place without first claiming!");
+  assert(!forwarding->is_done(), "Called compact in place with evacuated page!");
+
+  ZPage* const page = forwarding->page();
+
+  size_t bytes_in_placed = 0;
+  ZForwardingCursor cursor;
+  // page->reset(forwarding->to_age(), ZPageResetType::InPlaceRelocation);
+  page->reset_top();
+  forwarding->object_iterate_via_livemap([&](const oop obj) {
+    const zaddress from_addr = to_zaddress(obj);
+    if (is_null(forwarding_find(forwarding, from_addr, &cursor))) {
+      const size_t size = ZUtils::object_size(from_addr);
+      auto to_addr = page->alloc_object(size);
+
+      if (to_addr + size > from_addr) {
+        ZUtils::object_copy_conjoint(from_addr, to_addr, size);
+      } else {
+        ZUtils::object_copy_disjoint(from_addr, to_addr, size);
+      }
+
+      if (to_addr == forwarding_insert(forwarding, from_addr, to_addr, &cursor)) {
+        bytes_in_placed += size;
+      }
+    }
+    return true;
+  });
+
+  return bytes_in_placed;
 }
 
 zaddress ZRelocate::relocate_object(ZForwarding* forwarding, zaddress_unsafe from_addr) {
@@ -373,20 +422,48 @@ zaddress ZRelocate::relocate_object(ZForwarding* forwarding, zaddress_unsafe fro
     return to_addr;
   }
 
-  // Relocate object
-  if (forwarding->retain_page(&_queue)) {
-    assert(_generation->is_phase_relocate(), "Must be");
-    to_addr = relocate_object_inner(forwarding, safe(from_addr), &cursor);
-    forwarding->release_page();
+  const bool is_deferrable = forwarding->is_deferrable();
+  if (forwarding->retain_page(&_queue, is_deferrable)) {
+    const size_t size = ZUtils::object_size(safe(from_addr));
+    ZAllocatorForRelocation* allocator = ZAllocator::relocation(forwarding->to_age());
 
-    if (!is_null(to_addr)) {
-      // Success
-      return to_addr;
+    if (is_deferrable) {
+      forwarding->release_page();
+      zaddress to_addr = allocator->alloc_object(size, ZGeneration::young()->is_phase_mark());
+      if (forwarding->retain_page(&_queue, is_deferrable)) {
+        to_addr = relocate_object_inner(forwarding, safe(from_addr), &cursor, size, to_addr, allocator);
+
+        // Try to reclaim memory
+        ZFromSpacePool::pool()->try_free_if_evacuated_else_release(forwarding, 2);
+        // forwarding->release_page();
+
+        // We managed to relocate the object
+        if (!is_null(to_addr)) {
+          return to_addr;
+        }
+
+        if (is_null(to_addr) && forwarding->is_evacuated()) {
+          // Rare case -- we failed to relocate but must be relocated now
+          return forwarding_find(forwarding, from_addr, &cursor);
+        }
+
+        ZFromSpacePool::pool()->compact_in_place(forwarding);
+      }
+    } else {
+      zaddress to_addr = allocator->alloc_object(size, false);
+      to_addr = relocate_object_inner(forwarding, safe(from_addr), &cursor, size, to_addr, allocator);
+
+      forwarding->release_page();
+
+      // We managed to relocate the object
+      if (!is_null(to_addr)) {
+        return to_addr;
+      }
+
+      // Failed to relocate object. Signal and wait for a worker thread to
+      // complete relocation of this page, and then forward the object.
+      _queue.add_and_wait(forwarding);
     }
-
-    // Failed to relocate object. Signal and wait for a worker thread to
-    // complete relocation of this page, and then forward the object.
-    _queue.add_and_wait(forwarding);
   }
 
   // Forward object
@@ -444,7 +521,7 @@ public:
     ZAllocatorForRelocation* const allocator = ZAllocator::relocation(forwarding->to_age());
     ZPage* const page = alloc_page(allocator, forwarding->type(), forwarding->size());
     if (page == nullptr) {
-      Atomic::inc(&_in_place_count);
+      Atomic::inc(&_in_place_count, memory_order_relaxed);
     }
 
     if (target != nullptr) {
@@ -528,7 +605,7 @@ public:
       ZPage* const to_page = alloc_page(allocator, forwarding->type(), forwarding->size());
       set_shared(to_age, to_page);
       if (to_page == nullptr) {
-        Atomic::inc(&_in_place_count);
+        Atomic::inc(&_in_place_count, memory_order_relaxed);
         _in_place = true;
       }
 
@@ -879,7 +956,7 @@ private:
 
     while (!try_relocate_object(addr)) {
       // Allocate a new target page, or if that fails, use the page being
-      // relocated as the new target, which will cause it to be relocated
+      // relodcated as the new target, which will cause it to be relocated
       // in-place.
       const ZPageAge to_age = _forwarding->to_age();
       ZPage* to_page = _allocator->alloc_and_retire_target_page(_forwarding, target(to_age));
@@ -986,7 +1063,7 @@ public:
     ZVerify::before_relocation(_forwarding);
 
     // Relocate objects
-    _forwarding->object_iterate([&](oop obj) { relocate_object(obj); });
+    _forwarding->object_iterate([&](oop obj) { relocate_object(obj); return true; });
 
     ZVerify::after_relocation(_forwarding);
 
@@ -1122,7 +1199,12 @@ public:
       ZForwarding* forwarding;
 
       if (_iter.next(&forwarding)) {
-        claim_and_do_forwarding(forwarding);
+        if (forwarding->is_deferrable()) {
+          _generation->increase_compacted(forwarding->live_bytes());
+          _generation->increase_freed(forwarding->page()->size()); // se till att deferred-sidor räknas som fria i statistiken för generation->compacted()
+        } else {
+          claim_and_do_forwarding(forwarding);
+        }
         return true;
       }
 

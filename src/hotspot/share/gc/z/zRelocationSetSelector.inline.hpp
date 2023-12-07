@@ -133,6 +133,7 @@ inline void ZRelocationSetSelector::register_empty_page(ZPage* page) {
 
   if (type == ZPageType::small) {
     _small.register_empty_page(page);
+    if (page->was_fsp_prev_cycle()) return; // FSP has ownership
   } else if (type == ZPageType::medium) {
     _medium.register_empty_page(page);
   } else {

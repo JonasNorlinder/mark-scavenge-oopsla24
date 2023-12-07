@@ -245,6 +245,8 @@
           "free space in this calculation. (G1 collector only)")            \
           range(0, 100)                                                     \
                                                                             \
+  product(double, GCTimerIgnore, 0.001,  "")                       \
+                                                                            \
   notproduct(bool, ScavengeALot, false,                                     \
           "Force scavenge at every Nth exit from the runtime system "       \
           "(N=ScavengeALotInterval)")                                       \

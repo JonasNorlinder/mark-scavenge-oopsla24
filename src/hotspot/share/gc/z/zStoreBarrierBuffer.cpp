@@ -94,7 +94,7 @@ void ZStoreBarrierBuffer::install_base_pointers_inner() {
     if (forwarding != nullptr) {
       // Page is being relocated
       ZPage* const page = forwarding->page();
-      _base_pointers[i] = page->find_base(p);
+      _base_pointers[i] = page->find_base(p, forwarding->is_deferrable() ? forwarding->livemap_copy() : nullptr);
     } else {
       // Page is not being relocated
       _base_pointers[i] = zaddress_unsafe::null;

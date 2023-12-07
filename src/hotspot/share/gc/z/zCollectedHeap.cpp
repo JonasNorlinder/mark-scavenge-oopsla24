@@ -22,6 +22,8 @@
  */
 
 #include "gc/z/zAddress.hpp"
+#include "gc/z/zFromSpacePool.hpp"
+#include "gc/z/zFromSpacePool.inline.hpp"
 #include "precompiled.hpp"
 #include "classfile/classLoaderData.hpp"
 #include "gc/shared/gcHeapSummary.hpp"
@@ -53,6 +55,7 @@
 #include "runtime/jniHandles.inline.hpp"
 #include "services/memoryUsage.hpp"
 #include "utilities/align.hpp"
+#include "utilities/compilerWarnings.hpp"
 
 ZCollectedHeap* ZCollectedHeap::heap() {
   return named_heap<ZCollectedHeap>(CollectedHeap::Z);
@@ -67,7 +70,10 @@ ZCollectedHeap::ZCollectedHeap()
     _driver_major(new ZDriverMajor()),
     _director(new ZDirector()),
     _stat(new ZStat()),
-    _runtime_workers() {}
+    _runtime_workers() {
+      ALLOW_C_FUNCTION(::malloc,
+        ::new ((ZFromSpacePool*)malloc(sizeof(ZFromSpacePool))) ZFromSpacePool(););
+    }
 
 CollectedHeap::Name ZCollectedHeap::kind() const {
   return CollectedHeap::Z;

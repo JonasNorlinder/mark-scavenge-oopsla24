@@ -30,8 +30,10 @@
 #include "gc/z/zAttachedArray.inline.hpp"
 #include "gc/z/zForwardingAllocator.inline.hpp"
 #include "gc/z/zHash.inline.hpp"
+#include "gc/z/zLiveMap.inline.hpp"
 #include "gc/z/zHeap.hpp"
 #include "gc/z/zIterator.inline.hpp"
+#include "gc/z/zLock.hpp"
 #include "gc/z/zLock.inline.hpp"
 #include "gc/z/zPage.inline.hpp"
 #include "gc/z/zUtils.inline.hpp"
@@ -39,6 +41,7 @@
 #include "runtime/atomic.hpp"
 #include "utilities/debug.hpp"
 #include "utilities/powerOfTwo.hpp"
+#include "utilities/count_trailing_zeros.hpp"
 
 inline uint32_t ZForwarding::nentries(const ZPage* page) {
   // The number returned by the function is used to size the hash table of
@@ -64,15 +67,72 @@ inline ZForwarding::ZForwarding(ZPage* page, ZPageAge to_age, size_t nentries)
     _from_age(page->age()),
     _to_age(to_age),
     _claimed(false),
+    _claimed2(false),
     _ref_lock(),
     _ref_count(1),
     _done(false),
+    _evacuated(false),
     _relocated_remembered_fields_state(ZPublishState::none),
     _relocated_remembered_fields_array(),
     _relocated_remembered_fields_publish_young_seqnum(0),
     _in_place(false),
     _in_place_top_at_start(),
-    _in_place_thread(nullptr) {}
+    _in_place_thread(nullptr),
+    _is_deferrable(ZDefer && to_age < ZPageAge::old && type() == ZPageType::small),
+    _zlivemap(_is_deferrable ? page->object_max_count() : 0),
+    _live_bytes(page->live_bytes()),
+    _evacuated_bytes(0),
+    _in_placed(false),
+    _livemap_copied(false) {
+      copy_livemap();
+    }
+
+static zoffset offset_from_bit_index(BitMap::idx_t index, zoffset start, size_t object_alignment_shift) {
+  const uintptr_t l_offset = ((index / 2) << object_alignment_shift);
+  return start + l_offset;
+}
+
+static oop object_from_bit_index(BitMap::idx_t index, zoffset start, size_t object_alignment_shift) {
+  const zoffset offset = offset_from_bit_index(index, start, object_alignment_shift);
+  return to_oop(ZOffset::address(offset));
+}
+
+inline ZLiveMap* ZForwarding::livemap_copy() {
+  return &_zlivemap;
+}
+
+inline void ZForwarding::copy_livemap() {
+  if (_is_deferrable) {
+    if (!_livemap_copied) {
+      memcpy(_zlivemap.livemap_raw(), _page->livemap_raw(), _page->_livemap._bitmap.size()/8);
+      _zlivemap._segment_claim_bits = _page->_livemap._segment_claim_bits;
+      _zlivemap._segment_live_bits = _page->_livemap._segment_live_bits;
+      _zlivemap._live_bytes = _page->_livemap._live_bytes;
+      _zlivemap._live_objects = _page->_livemap._live_objects;
+      _livemap_copied = true;
+    }
+  }
+}
+
+template <typename Function>
+inline void ZForwarding::object_iterate_via_livemap(Function function) {
+  auto do_bit = [&](BitMap::idx_t index) -> bool {
+    const oop obj = object_from_bit_index(index, _virtual.start(), _object_alignment_shift) ;
+
+    // Apply function
+    return function(obj);
+  };
+
+  if (_livemap_copied) {
+    _zlivemap.iterate(ZGenerationId::deferred, do_bit);
+  } else {
+    _page->object_iterate_deferred(function);
+  }
+}
+
+inline bool ZForwarding::is_deferrable() const {
+  return _is_deferrable;
+}
 
 inline ZPageType ZForwarding::type() const {
   return _page->type();
@@ -109,8 +169,12 @@ inline bool ZForwarding::is_promotion() const {
 
 template <typename Function>
 inline void ZForwarding::object_iterate(Function function) {
-  ZObjectClosure<Function> cl(function);
-  _page->object_iterate(function);
+  if (_is_deferrable) {
+    object_iterate_via_livemap(function);
+  } else {
+    ZObjectClosure<Function> cl(function);
+    _page->object_iterate(function);
+  }
 }
 
 template <typename Function>

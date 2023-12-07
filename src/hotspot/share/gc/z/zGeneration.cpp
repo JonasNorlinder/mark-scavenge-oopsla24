@@ -21,6 +21,7 @@
  * questions.
  */
 
+#include "gc/z/zGeneration.hpp"
 #include "precompiled.hpp"
 #include "classfile/classLoaderDataGraph.hpp"
 #include "code/nmethod.hpp"
@@ -52,6 +53,7 @@
 #include "gc/z/zUncoloredRoot.inline.hpp"
 #include "gc/z/zVerify.hpp"
 #include "gc/z/zWorkers.hpp"
+#include "gc/z/zFromSpacePool.inline.hpp"
 #include "logging/log.hpp"
 #include "memory/universe.hpp"
 #include "prims/jvmtiTagMap.hpp"
@@ -256,6 +258,9 @@ void ZGeneration::select_relocation_set(ZGenerationId generation, bool promote_a
   ZRelocationSetIterator rs_iter(&_relocation_set);
   for (ZForwarding* forwarding; rs_iter.next(&forwarding);) {
     _forwarding_table.insert(forwarding);
+    if (forwarding->is_deferrable()) {
+      ZFromSpacePool::pool()->add_page(forwarding->page());
+    }
   }
 
   // Update statistics
@@ -272,7 +277,11 @@ void ZGeneration::reset_relocation_set() {
   ZRelocationSetIterator iter(&_relocation_set);
   for (ZForwarding* forwarding; iter.next(&forwarding);) {
     _forwarding_table.remove(forwarding);
+    DEBUG_ONLY(if (!forwarding->is_done()) {
+      assert(forwarding->is_deferrable(), "Only deferrable forwardings may be non-complete at this stage");
+    });
   }
+
 
   // Reset relocation set
   _relocation_set.reset(_page_allocator);
@@ -520,7 +529,6 @@ bool ZGenerationYoung::should_record_stats() {
 
 void ZGenerationYoung::collect(ZYoungType type, ConcurrentGCTimer* timer) {
   ZGenerationCollectionScopeYoung scope(type, timer);
-
   // Phase 1: Pause Mark Start
   pause_mark_start();
 
@@ -536,6 +544,8 @@ void ZGenerationYoung::collect(ZYoungType type, ConcurrentGCTimer* timer) {
 
     abortpoint();
   }
+
+  ZFromSpacePool::pool()->reset_end();
 
   // Phase 4: Concurrent Mark Free
   concurrent_mark_free();
@@ -893,6 +903,7 @@ bool ZGenerationYoung::mark_end() {
 
   // Enter mark completed phase
   set_phase(Phase::MarkComplete);
+  ZFromSpacePool::pool()->reset_start();
 
   // Update statistics
   stat_heap()->at_mark_end(_page_allocator->stats(this));
@@ -912,6 +923,7 @@ void ZGenerationYoung::relocate_start() {
   // Enter relocate phase
   set_phase(Phase::Relocate);
 
+  _compacted = 0;
   // Update statistics
   stat_heap()->at_relocate_start(_page_allocator->stats(this));
 
@@ -923,7 +935,7 @@ void ZGenerationYoung::relocate() {
   _relocate.relocate(&_relocation_set);
 
   // Update statistics
-  stat_heap()->at_relocate_end(_page_allocator->stats(this), should_record_stats());
+  stat_heap()->at_relocate_end_young(_page_allocator->stats(this), should_record_stats());
 }
 
 void ZGenerationYoung::flip_promote(ZPage* from_page, ZPage* to_page) {

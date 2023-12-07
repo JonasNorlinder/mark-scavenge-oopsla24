@@ -77,6 +77,8 @@ inline void ZList<T>::insert(ZListNode<T>* before, ZListNode<T>* node) {
   before->verify_links_linked();
   node->verify_links_linked();
 
+  node->_list = this;
+
   _size++;
 }
 
@@ -184,6 +186,8 @@ inline void ZList<T>::remove(T* elem) {
   prev->_next = next;
   next->verify_links();
   prev->verify_links();
+
+  node->_list = nullptr;
 
   _size--;
 }

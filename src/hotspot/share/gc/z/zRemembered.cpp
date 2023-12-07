@@ -272,7 +272,7 @@ bool ZRemembered::scan_forwarding(ZForwarding* forwarding, void* context_void) c
   ZRememberedScanForwardingContext* const context = (ZRememberedScanForwardingContext*)context_void;
   bool result = false;
 
-  if (forwarding->retain_page(ZGeneration::old()->relocate_queue())) {
+  if (forwarding->retain_page(ZGeneration::old()->relocate_queue(), false)) {
     ZRememberedScanForwardingMeasureRetained measure(context);
     forwarding->page()->log_msg(" (scan_forwarding)");
 

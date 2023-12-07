@@ -21,6 +21,7 @@
  * questions.
  */
 
+#include "gc/z/zFromSpacePool.hpp"
 #include "precompiled.hpp"
 #include "gc/shared/gc_globals.hpp"
 #include "gc/z/zAbort.inline.hpp"
@@ -29,6 +30,7 @@
 #include "gc/z/zDriver.hpp"
 #include "gc/z/zCPU.inline.hpp"
 #include "gc/z/zGeneration.inline.hpp"
+#include "gc/z/zFromSpacePool.inline.hpp"
 #include "gc/z/zGlobals.hpp"
 #include "gc/z/zNMethodTable.hpp"
 #include "gc/z/zPageAllocator.inline.hpp"
@@ -1750,6 +1752,15 @@ size_t ZStatHeap::reclaimed(size_t freed, size_t relocated, size_t promoted) con
   return freed - relocated - promoted;
 }
 
+size_t ZStatHeap::reclaimed_young(size_t freed, size_t relocated, size_t promoted) const {
+  assert(freed >= relocated + promoted, "");
+  if (freed < (relocated + promoted)) {
+    log_warning(gc)("reclaimed_young underflow %s", ZGeneration::young()->phase_to_string());
+    return 0;
+  }
+  return freed - relocated - promoted;
+}
+
 void ZStatHeap::at_initialize(size_t min_capacity, size_t max_capacity) {
   ZLocker<ZLock> locker(&_stat_lock);
 
@@ -1817,6 +1828,32 @@ void ZStatHeap::at_relocate_start(const ZPageAllocatorStats& stats) {
   _at_relocate_start.promoted = stats.promoted();
   _at_relocate_start.compacted = stats.compacted();
   _at_relocate_start.allocation_stalls = stats.allocation_stalls();
+}
+
+void ZStatHeap::at_relocate_end_young(const ZPageAllocatorStats& stats, bool record_stats) {
+  ZLocker<ZLock> locker(&_stat_lock);
+
+  _at_relocate_end.capacity = stats.capacity();
+  _at_relocate_end.capacity_high = capacity_high();
+  _at_relocate_end.capacity_low = capacity_low();
+  _at_relocate_end.free = free(stats.used());
+  _at_relocate_end.free_high = free(stats.used_low());
+  _at_relocate_end.free_low = free(stats.used_high());
+  _at_relocate_end.used = stats.used();
+  _at_relocate_end.used_high = stats.used_high();
+  _at_relocate_end.used_low = stats.used_low();
+  _at_relocate_end.used_generation = stats.used_generation();
+  _at_relocate_end.live = _at_mark_end.live - stats.promoted();
+  _at_relocate_end.garbage = garbage(stats.freed(), stats.compacted(), stats.promoted());
+  _at_relocate_end.mutator_allocated = mutator_allocated(stats.used_generation(), stats.freed(), stats.compacted());
+  _at_relocate_end.reclaimed = reclaimed_young(stats.freed(), stats.compacted(), stats.promoted());
+  _at_relocate_end.promoted = stats.promoted();
+  _at_relocate_end.compacted = stats.compacted();
+  _at_relocate_end.allocation_stalls = stats.allocation_stalls();
+
+  if (record_stats) {
+    _reclaimed_bytes.add(_at_relocate_end.reclaimed);
+  }
 }
 
 void ZStatHeap::at_relocate_end(const ZPageAllocatorStats& stats, bool record_stats) {

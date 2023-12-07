@@ -132,4 +132,5 @@ public:
   bool supports_concurrent_gc_breakpoints() const override;
 };
 
+
 #endif // SHARE_GC_Z_ZCOLLECTEDHEAP_HPP

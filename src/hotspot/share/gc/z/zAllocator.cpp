@@ -63,8 +63,8 @@ ZPageAge ZAllocatorForRelocation::install() {
 ZAllocatorForRelocation::ZAllocatorForRelocation()
   : ZAllocator(install()) {}
 
-zaddress ZAllocatorForRelocation::alloc_object(size_t size) {
-  return _object_allocator.alloc_object_for_relocation(size);
+zaddress ZAllocatorForRelocation::alloc_object(size_t size, bool deferred) {
+  return _object_allocator.alloc_object_for_relocation(size, deferred);
 }
 
 void ZAllocatorForRelocation::undo_alloc_object(zaddress addr, size_t size) {

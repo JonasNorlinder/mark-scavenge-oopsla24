@@ -21,6 +21,7 @@
  * questions.
  */
 
+#include "gc/z/zLock.hpp"
 #include "precompiled.hpp"
 #include "gc/shared/gcLogPrecious.hpp"
 #include "gc/z/zAddress.inline.hpp"
@@ -32,6 +33,7 @@
 #include "logging/log.hpp"
 #include "runtime/atomic.hpp"
 #include "utilities/align.hpp"
+#include "utilities/debug.hpp"
 
 //
 // Reference count states:
@@ -51,7 +53,23 @@
 //
 
 bool ZForwarding::claim() {
-  return Atomic::cmpxchg(&_claimed, false, true) == false;
+  if (Atomic::cmpxchg(&_claimed, false, true) == false) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
+bool ZForwarding::claim2() {
+  return Atomic::cmpxchg(&_claimed2, false, true) == false;
+}
+
+bool ZForwarding::is_claim2() {
+  return Atomic::load(&_claimed2);
+}
+
+bool ZForwarding::unclaim2() {
+  return Atomic::cmpxchg(&_claimed2, true, false) == true;
 }
 
 void ZForwarding::in_place_relocation_start(zoffset relocated_watermark) {
@@ -85,8 +103,35 @@ bool ZForwarding::in_place_relocation_is_below_top_at_start(zoffset offset) cons
   return Atomic::load(&_in_place_thread) == Thread::current() && offset < _in_place_top_at_start;
 }
 
-bool ZForwarding::retain_page(ZRelocateQueue* queue) {
+bool ZForwarding::try_in_place_relocation_claim_page() {
+  return Atomic::cmpxchg(&_ref_count, 1, -1) == 1;
+}
+
+bool ZForwarding::try_retain_page() {
+  if (Atomic::cmpxchg(&_ref_count, 1, 2) == 1) {
+    return true;
+  }
+  return false;
+}
+
+bool ZForwarding::try_fast_zero_rc(int32_t initial_rc) {
+  if (is_evacuated() && Atomic::cmpxchg(&_ref_count, initial_rc, 0) == initial_rc) {
+    ZLocker<ZConditionLock> locker(&_ref_lock);
+    _ref_lock.notify_all();
+    return true;
+  } else {
+    return false;
+  }
+}
+
+bool ZForwarding::retain_page(bool deferred) {
+  return retain_page(nullptr, deferred);
+}
+
+bool ZForwarding::retain_page(ZRelocateQueue* queue, bool deferred, bool fail_fast) {
   for (;;) {
+    if (is_deferrable() && is_evacuated()) return false;
+
     const int32_t ref_count = Atomic::load_acquire(&_ref_count);
 
     if (ref_count == 0) {
@@ -96,8 +141,15 @@ bool ZForwarding::retain_page(ZRelocateQueue* queue) {
 
     if (ref_count < 0) {
       // Claimed
-      queue->add_and_wait(this);
-
+      if (!is_deferrable()) {
+        if (queue) {
+          queue->add_and_wait(this);
+        } else {
+          ShouldNotReachHere();
+        }
+      } else {
+        if (!fail_fast) wait_until_done();
+      }
       // Released
       return false;
     }
@@ -109,10 +161,23 @@ bool ZForwarding::retain_page(ZRelocateQueue* queue) {
   }
 }
 
-void ZForwarding::in_place_relocation_claim_page() {
+bool ZForwarding::in_place_relocation_claim_page(bool return_if_evacuated) {
+  // if (is_evacuated()) return return_if_evacuated;
+  assert(is_deferrable() || Atomic::load(&_claimed), "Breaks protocol");
+  
   for (;;) {
     const int32_t ref_count = Atomic::load(&_ref_count);
-    assert(ref_count > 0, "Invalid state");
+    assert(ref_count > 0 || is_deferrable(), "Invalid state");
+
+    // If race with other thread -- wait and then fail
+    if (ref_count <= 0) {
+      assert(is_deferrable(), "");
+      ZLocker<ZConditionLock> locker(&_ref_lock);
+      while (Atomic::load_acquire(&_ref_count) != 0) {
+        _ref_lock.wait();
+      }
+      return false;
+    }
 
     // Invert reference count
     if (Atomic::cmpxchg(&_ref_count, ref_count, -ref_count) != ref_count) {
@@ -121,6 +186,7 @@ void ZForwarding::in_place_relocation_claim_page() {
 
     // If the previous reference count was 1, then we just changed it to -1,
     // and we have now claimed the page. Otherwise we wait until it is claimed.
+    // Since evacuation could finish while we wait, we might still fail.
     if (ref_count != 1) {
       ZLocker<ZConditionLock> locker(&_ref_lock);
       while (Atomic::load_acquire(&_ref_count) != -1) {
@@ -131,6 +197,8 @@ void ZForwarding::in_place_relocation_claim_page() {
     // Done
     break;
   }
+
+  return true;
 }
 
 void ZForwarding::release_page() {
@@ -182,17 +250,51 @@ ZPage* ZForwarding::detach_page() {
   return _page;
 }
 
+int32_t ZForwarding::ref_count() const {
+  return Atomic::load(&_ref_count);
+}
+
+void ZForwarding::wait_until_done() const {
+  ZLocker<ZConditionLock> guard(&_ref_lock);
+  while (!is_done()/* && !is_evacuated()*/) { // TODO: put this back?
+    _ref_lock.wait();
+  }
+}
+
 ZPage* ZForwarding::page() {
-  assert(Atomic::load(&_ref_count) != 0, "The page has been released/detached");
+  //assert(Atomic::load(&_ref_count) != 0, "The page has been released/detached");
   return _page;
 }
 
-void ZForwarding::mark_done() {
+void ZForwarding::mark_done(bool notify) {
+  assert(!Atomic::load(&_done), "only mark done once");
   Atomic::store(&_done, true);
+  // FIXME: I don't know if it is safe to remove the notification below yet
+  if (notify && _is_deferrable) {
+    ZLocker<ZConditionLock> guard(&_ref_lock);
+    _ref_lock.notify_all();
+  }
 }
 
 bool ZForwarding::is_done() const {
   return Atomic::load(&_done);
+}
+
+bool ZForwarding::inc_evacuated_bytes(size_t bytes) {
+  if (Atomic::add(&_evacuated_bytes, bytes) == _live_bytes) {
+    Atomic::store(&_evacuated, true);
+
+    ZLocker<ZConditionLock> guard(&_ref_lock);
+    _ref_lock.notify_all();
+    return true;  // page is evacuated
+  } else {
+    return false; // not yet evacuated
+  }
+}
+
+bool ZForwarding::is_evacuated() const {
+  guarantee(_is_deferrable, "");
+  return Atomic::load(&_evacuated);
 }
 
 //

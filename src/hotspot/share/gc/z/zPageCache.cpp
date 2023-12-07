@@ -21,6 +21,7 @@
  * questions.
  */
 
+#include "gc/z/zPageType.hpp"
 #include "precompiled.hpp"
 #include "gc/z/zGlobals.hpp"
 #include "gc/z/zList.inline.hpp"
@@ -138,14 +139,29 @@ ZPage* ZPageCache::alloc_oversized_large_page(size_t size) {
   return nullptr;
 }
 
-ZPage* ZPageCache::alloc_oversized_page(size_t size) {
-  ZPage* page = alloc_oversized_large_page(size);
-  if (page == nullptr) {
-    page = alloc_oversized_medium_page(size);
+ZPage* ZPageCache::alloc_oversized_page(ZPageType type, size_t size) {
+  ZPage* oversized = alloc_oversized_large_page(size);
+  if (oversized == nullptr) {
+    oversized = alloc_oversized_medium_page(size);
   }
 
-  if (page != nullptr) {
+  ZPage* page = nullptr;
+  if (oversized != nullptr) {
     ZStatInc(ZCounterPageCacheHitL3);
+    if (size < oversized->size()) {
+      // Split oversized page
+      page = oversized->split(type, size);
+
+      // Cache remainder
+      free_page(oversized);
+    } else {
+      // Re-type correctly sized page
+      page = oversized->retype(type);
+    }
+  }
+
+  if (page == nullptr) {
+    ZStatInc(ZCounterPageCacheMiss);
   }
 
   return page;
@@ -161,27 +177,6 @@ ZPage* ZPageCache::alloc_page(ZPageType type, size_t size) {
     page = alloc_medium_page();
   } else {
     page = alloc_large_page(size);
-  }
-
-  if (page == nullptr) {
-    // Try allocate potentially oversized page
-    ZPage* const oversized = alloc_oversized_page(size);
-    if (oversized != nullptr) {
-      if (size < oversized->size()) {
-        // Split oversized page
-        page = oversized->split(type, size);
-
-        // Cache remainder
-        free_page(oversized);
-      } else {
-        // Re-type correctly sized page
-        page = oversized->retype(type);
-      }
-    }
-  }
-
-  if (page == nullptr) {
-    ZStatInc(ZCounterPageCacheMiss);
   }
 
   return page;

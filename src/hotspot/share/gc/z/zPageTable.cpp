@@ -51,8 +51,10 @@ void ZPageTable::insert(ZPage* page) {
 void ZPageTable::remove(ZPage* page) {
   const zoffset offset = page->start();
   const size_t size = page->size();
+  guarantee(!page->in_any_pool(), "");
 
-  assert(_map.get(offset) == page, "Invalid entry");
+  auto left = _map.get(offset);
+  guarantee(left == page, "Invalid entry");
   _map.put(offset, size, nullptr);
 }
 

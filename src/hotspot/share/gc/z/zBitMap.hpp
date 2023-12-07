@@ -43,6 +43,10 @@ public:
   ZBitMap(idx_t size_in_bits);
   ZBitMap(const ZBitMap& other);
 
+  uintptr_t* raw() {
+    return (uintptr_t*)map();
+  };
+
   bool par_set_bit_pair(idx_t bit, bool finalizable, bool& inc_live);
 
   class ReverseIterator;

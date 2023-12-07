@@ -28,7 +28,8 @@
 
 enum class ZGenerationId : uint8_t {
   young,
-  old
+  old,
+  deferred
 };
 
 enum class ZGenerationIdOptional : uint8_t {

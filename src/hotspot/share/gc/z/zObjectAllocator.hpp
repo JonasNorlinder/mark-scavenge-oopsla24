@@ -41,9 +41,13 @@ private:
   ZPerCPU<size_t>    _undone;
   ZContended<ZPage*> _shared_medium_page;
   ZPerCPU<ZPage*>    _shared_small_page;
+  ZPerCPU<ZPage*>    _shared_small_deferred_page;
 
   ZPage** shared_small_page_addr();
   ZPage* const* shared_small_page_addr() const;
+
+  ZPage** shared_small_page_deferred_addr();
+  ZPage* const* shared_small_page_deferred_addr() const;
 
   ZPage* alloc_page(ZPageType type, size_t size, ZAllocationFlags flags);
   void undo_alloc_page(ZPage* page);
@@ -68,7 +72,7 @@ public:
   zaddress alloc_object(size_t size);
 
   // Relocation
-  zaddress alloc_object_for_relocation(size_t size);
+  zaddress alloc_object_for_relocation(size_t size, bool deferred);
   void undo_alloc_object_for_relocation(zaddress addr, size_t size);
 
   ZPage* alloc_page_for_relocation(ZPageType type, size_t size, ZAllocationFlags flags);

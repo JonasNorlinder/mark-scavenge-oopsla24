@@ -46,7 +46,16 @@ ZObjectAllocator::ZObjectAllocator(ZPageAge age)
     _used(0),
     _undone(0),
     _shared_medium_page(nullptr),
-    _shared_small_page(nullptr) {}
+    _shared_small_page(nullptr),
+    _shared_small_deferred_page(nullptr) {}
+
+ZPage** ZObjectAllocator::shared_small_page_deferred_addr() {
+  return _use_per_cpu_shared_small_pages ? _shared_small_deferred_page.addr() : _shared_small_deferred_page.addr(0);
+}
+
+ZPage* const* ZObjectAllocator::shared_small_page_deferred_addr() const {
+  return _use_per_cpu_shared_small_pages ? _shared_small_deferred_page.addr() : _shared_small_deferred_page.addr(0);
+}
 
 ZPage** ZObjectAllocator::shared_small_page_addr() {
   return _use_per_cpu_shared_small_pages ? _shared_small_page.addr() : _shared_small_page.addr(0);
@@ -145,7 +154,7 @@ zaddress ZObjectAllocator::alloc_medium_object(size_t size, ZAllocationFlags fla
 }
 
 zaddress ZObjectAllocator::alloc_small_object(size_t size, ZAllocationFlags flags) {
-  return alloc_object_in_shared_page(shared_small_page_addr(), ZPageType::small, ZPageSizeSmall, size, flags);
+  return alloc_object_in_shared_page(flags.alloc_with_old_seqnum() ? shared_small_page_deferred_addr() : shared_small_page_addr(), ZPageType::small, ZPageSizeSmall, size, flags);
 }
 
 zaddress ZObjectAllocator::alloc_object(size_t size, ZAllocationFlags flags) {
@@ -166,9 +175,14 @@ zaddress ZObjectAllocator::alloc_object(size_t size) {
   return alloc_object(size, flags);
 }
 
-zaddress ZObjectAllocator::alloc_object_for_relocation(size_t size) {
+zaddress ZObjectAllocator::alloc_object_for_relocation(size_t size, bool deferred) {
   ZAllocationFlags flags;
   flags.set_non_blocking();
+  if (deferred) {
+    flags.set_gc_relocation();
+    flags.set_alloc_with_old_seqnum();
+  }
+  flags.set_relocation();
 
   return alloc_object(size, flags);
 }
@@ -230,4 +244,5 @@ void ZObjectAllocator::retire_pages() {
   // Reset allocation pages
   _shared_medium_page.set(nullptr);
   _shared_small_page.set_all(nullptr);
+  _shared_small_deferred_page.set_all(nullptr);
 }

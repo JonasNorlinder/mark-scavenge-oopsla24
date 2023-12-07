@@ -672,6 +672,7 @@ private:
   size_t mutator_allocated(size_t used, size_t freed, size_t relocated) const;
   size_t garbage(size_t freed, size_t relocated, size_t promoted) const;
   size_t reclaimed(size_t freed, size_t relocated, size_t promoted) const;
+  size_t reclaimed_young(size_t freed, size_t relocated, size_t promoted) const;
 
 public:
   ZStatHeap();
@@ -683,6 +684,7 @@ public:
   void at_select_relocation_set(const ZRelocationSetSelectorStats& stats);
   void at_relocate_start(const ZPageAllocatorStats& stats);
   void at_relocate_end(const ZPageAllocatorStats& stats, bool record_stats);
+  void at_relocate_end_young(const ZPageAllocatorStats& stats, bool record_stats);
 
   static size_t max_capacity();
   size_t used_at_collection_start() const;

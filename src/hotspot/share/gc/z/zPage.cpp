@@ -40,6 +40,7 @@ ZPage::ZPage(ZPageType type, const ZVirtualMemory& vmem, const ZPhysicalMemory& 
     _numa_id((uint8_t)-1),
     _seqnum(0),
     _seqnum_other(0),
+    _seqnum_fsp(0xDEADBEEF),
     _virtual(vmem),
     _top(to_zoffset_end(start())),
     _livemap(object_max_count()),
@@ -54,6 +55,22 @@ ZPage::ZPage(ZPageType type, const ZVirtualMemory& vmem, const ZPhysicalMemory& 
          (_type == ZPageType::medium && size() == ZPageSizeMedium) ||
          (_type == ZPageType::large && is_aligned(size(), ZGranuleSize)),
          "Page type/size mismatch");
+}
+
+uintptr_t* ZPage::livemap_raw() {
+  return _livemap.livemap_raw();
+}
+
+bool ZPage::was_fsp_prev_cycle() const {
+  return generation()->seqnum() == _seqnum_fsp + 1;
+}
+
+void ZPage::mark_as_fsp_current_cycle() {
+  _seqnum_fsp = generation()->seqnum();
+}
+
+bool ZPage::is_unlinked() const {
+  return _node.not_linked();
 }
 
 ZPage* ZPage::clone_limited() const {
@@ -136,6 +153,10 @@ void ZPage::reset_remembered_set() {
   if (!_remembered_set.is_initialized()) {
     _remembered_set.initialize(size());
   }
+}
+
+void ZPage::reset_age(ZPageAge age) {
+  _age = age;
 }
 
 void ZPage::reset(ZPageAge age, ZPageResetType type) {

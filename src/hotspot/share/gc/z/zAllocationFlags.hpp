@@ -50,6 +50,8 @@ private:
   typedef ZBitField<uint8_t, bool, 0, 1> field_non_blocking;
   typedef ZBitField<uint8_t, bool, 1, 1> field_gc_relocation;
   typedef ZBitField<uint8_t, bool, 2, 1> field_low_address;
+  typedef ZBitField<uint8_t, bool, 3, 1> field_alloc_with_old_seqnum;
+  typedef ZBitField<uint8_t, bool, 4, 1> field_relocation;
 
   uint8_t _flags;
 
@@ -61,6 +63,10 @@ public:
     _flags |= field_non_blocking::encode(true);
   }
 
+  void set_relocation() {
+    _flags |= field_relocation::encode(true);
+  }
+
   void set_gc_relocation() {
     _flags |= field_gc_relocation::encode(true);
   }
@@ -69,8 +75,16 @@ public:
     _flags |= field_low_address::encode(true);
   }
 
+  void set_alloc_with_old_seqnum() {
+    _flags |= field_alloc_with_old_seqnum::encode(true);
+  }
+
   bool non_blocking() const {
     return field_non_blocking::decode(_flags);
+  }
+
+  bool relocation() const {
+    return field_relocation::decode(_flags);
   }
 
   bool gc_relocation() const {
@@ -79,6 +93,10 @@ public:
 
   bool low_address() const {
     return field_low_address::decode(_flags);
+  }
+
+  bool alloc_with_old_seqnum() const {
+    return field_alloc_with_old_seqnum::decode(_flags);
   }
 };
 
