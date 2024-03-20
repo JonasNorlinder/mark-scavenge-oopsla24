@@ -84,7 +84,7 @@ inline ZForwarding::ZForwarding(ZPage* page, ZPageAge to_age, size_t nentries)
     _evacuated_bytes(0),
     _in_placed(false),
     _livemap_copied(false) {
-      copy_livemap();
+      // copy_livemap();
     }
 
 static zoffset offset_from_bit_index(BitMap::idx_t index, zoffset start, size_t object_alignment_shift) {
@@ -126,8 +126,13 @@ inline void ZForwarding::object_iterate_via_livemap(Function function) {
   if (_livemap_copied) {
     _zlivemap.iterate(ZGenerationId::deferred, do_bit);
   } else {
+    // guarantee(!ZGeneration::young()->is_phase_mark(), "");
     _page->object_iterate_deferred(function);
   }
+}
+
+inline bool ZForwarding::livemap_copied() const {
+  return _livemap_copied;
 }
 
 inline bool ZForwarding::is_deferrable() const {

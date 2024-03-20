@@ -384,6 +384,10 @@ size_t ZRelocate::compact_in_place(ZForwarding* forwarding) {
   assert(forwarding->ref_count() < 0,   "Called compact in place without first claiming!");
   assert(!forwarding->is_done(), "Called compact in place with evacuated page!");
 
+  if (ZGeneration::young()->is_phase_mark()) {
+    forwarding->copy_livemap();
+  }
+
   ZPage* const page = forwarding->page();
 
   size_t bytes_in_placed = 0;

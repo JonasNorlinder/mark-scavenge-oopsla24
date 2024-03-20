@@ -39,12 +39,14 @@ class ObjectClosure;
 class ZForwardingAllocator;
 class ZPage;
 class ZRelocateQueue;
+class ZGenerationYoung;
 
 typedef size_t ZForwardingCursor;
 
 class ZForwarding {
   friend class VMStructs;
   friend class ZForwardingTest;
+  friend class ZGenerationYoung;
 
   enum class ZPublishState : int8_t {
     none,      // No publishing done yet
@@ -108,6 +110,7 @@ public:
 
   bool is_deferrable() const;
   void copy_livemap();
+  bool livemap_copied() const;
 
   ZPageType type() const;
   ZPageAge from_age() const;
