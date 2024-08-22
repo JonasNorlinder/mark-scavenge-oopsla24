@@ -1,6 +1,6 @@
 # Mark-Scavenge: Waiting for Trash to Take Itself Out
 
-This repository contains MS-ZGC, an implementation of mark-scavenge, presented in the paper [Mark-Scavenge: Waiting for Trash to Take Itself Out](https://doi.org/) during OOPSLA'24.
+This repository contains MS-ZGC, an implementation of mark-scavenge, presented in the paper [Mark-Scavenge: Waiting for Trash to Take Itself Out](https://doi.org/10.1145/3689791) during OOPSLA'24.
 
 ## Comparing patches
 
